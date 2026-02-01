@@ -12,7 +12,7 @@ A股自选股智能分析系统 - 配置管理模块
 
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
@@ -37,6 +37,14 @@ class Config:
     
     # === 自选股配置 ===
     stock_list: List[str] = field(default_factory=list)
+    
+    # === 多股票列表分组配置（新功能）===
+    # 支持多组股票列表，每组可绑定不同的 Discord 频道
+    # stock_groups: {
+    #   "group_1": {"stocks": ["600519", "300750"], "discord_channel_id": "123456"},
+    #   "group_2": {"stocks": ["002594", "AAPL"], "discord_channel_id": "789012"}
+    # }
+    stock_groups: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     # === 飞书云文档配置 ===
     feishu_app_id: Optional[str] = None
@@ -285,8 +293,35 @@ class Config:
             if code.strip()
         ]
         
+        # === 新功能：解析多股票列表分组配置 ===
+        stock_groups = {}
+        group_index = 1
+        while True:
+            # 尝试读取 STOCK_LIST_1, STOCK_LIST_2, STOCK_LIST_3...
+            group_key = f"STOCK_LIST_{group_index}"
+            group_stocks_str = os.getenv(group_key, '')
+            
+            if not group_stocks_str:
+                break  # 没有更多分组
+            
+            # 解析这组的股票列表
+            group_stocks = [code.strip() for code in group_stocks_str.split(',') if code.strip()]
+            
+            # 获取对应的 Discord 频道 ID
+            channel_key = f"DISCORD_CHANNEL_ID_{group_index}"
+            channel_id = os.getenv(channel_key, '')
+            
+            if group_stocks:
+                stock_groups[f"group_{group_index}"] = {
+                    "stocks": group_stocks,
+                    "discord_channel_id": channel_id if channel_id else None,
+                    "name": f"分组{group_index}"  # 可以后续支持自定义名称
+                }
+            
+            group_index += 1
+        
         # 如果没有配置，使用默认的示例股票
-        if not stock_list:
+        if not stock_list and not stock_groups:
             stock_list = ['600519', '000001', '300750']
         
         # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
@@ -311,6 +346,7 @@ class Config:
         
         return cls(
             stock_list=stock_list,
+            stock_groups=stock_groups,  # 新增分组配置
             feishu_app_id=os.getenv('FEISHU_APP_ID'),
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),

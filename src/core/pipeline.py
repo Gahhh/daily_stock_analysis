@@ -446,7 +446,9 @@ class StockAnalysisPipeline:
         self, 
         stock_codes: Optional[List[str]] = None,
         dry_run: bool = False,
-        send_notification: bool = True
+        send_notification: bool = True,
+        group_name: Optional[str] = None,
+        discord_channel_id: Optional[str] = None
     ) -> List[AnalysisResult]:
         """
         运行完整的分析流程
@@ -461,6 +463,8 @@ class StockAnalysisPipeline:
             stock_codes: 股票代码列表（可选，默认使用配置中的自选股）
             dry_run: 是否仅获取数据不分析
             send_notification: 是否发送推送通知
+            group_name: 分组名称（可选，用于多组模式）
+            discord_channel_id: Discord频道ID（可选，用于分组推送）
             
         Returns:
             分析结果列表
@@ -476,9 +480,10 @@ class StockAnalysisPipeline:
             logger.error("未配置自选股列表，请在 .env 文件中设置 STOCK_LIST")
             return []
         
-        logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")
-        logger.info(f"股票列表: {', '.join(stock_codes)}")
-        logger.info(f"并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}")
+        group_prefix = f"[{group_name}] " if group_name else ""
+        logger.info(f"===== {group_prefix}开始分析 {len(stock_codes)} 只股票 =====")
+        logger.info(f"{group_prefix}股票列表: {', '.join(stock_codes)}")
+        logger.info(f"{group_prefix}并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}")
         
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
         # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
@@ -610,7 +615,11 @@ class StockAnalysisPipeline:
                     elif channel == NotificationChannel.PUSHPLUS:
                         non_wechat_success = self.notifier.send_to_pushplus(report) or non_wechat_success
                     elif channel == NotificationChannel.DISCORD:
-                        non_wechat_success = self.notifier.send_to_discord(report) or non_wechat_success
+                        # 如果指定了Discord频道ID，使用指定的频道
+                        if discord_channel_id:
+                            non_wechat_success = self.notifier.send(report, discord_channel_id=discord_channel_id) or non_wechat_success
+                        else:
+                            non_wechat_success = self.notifier.send_to_discord(report) or non_wechat_success
                     elif channel == NotificationChannel.PUSHOVER:
                         non_wechat_success = self.notifier.send_to_pushover(report) or non_wechat_success
                     elif channel == NotificationChannel.ASTRBOT:

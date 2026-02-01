@@ -2755,17 +2755,25 @@ class NotificationService:
             logger.error(f"Discord Webhook 发送异常: {e}")
             return False
     
-    def _send_discord_bot(self, content: str) -> bool:
+    def _send_discord_bot(self, content: str, channel_id: Optional[str] = None) -> bool:
         """
         使用 Bot API 发送消息到 Discord
         
         Args:
             content: Markdown 格式的消息内容
+            channel_id: 指定的频道ID（可选，不指定则使用默认频道）
             
         Returns:
             是否发送成功
         """
         try:
+            # 如果指定了频道ID，使用指定的；否则使用默认频道
+            target_channel_id = channel_id if channel_id else self._discord_config["channel_id"]
+            
+            if not target_channel_id:
+                logger.error("Discord Bot: 未指定频道ID且无默认频道")
+                return False
+            
             headers = {
                 'Authorization': f'Bot {self._discord_config["bot_token"]}',
                 'Content-Type': 'application/json'
@@ -2775,11 +2783,11 @@ class NotificationService:
                 'content': content
             }
             
-            url = f'https://discord.com/api/v10/channels/{self._discord_config["channel_id"]}/messages'
+            url = f'https://discord.com/api/v10/channels/{target_channel_id}/messages'
             response = requests.post(url, json=payload, headers=headers, timeout=10)
             
             if response.status_code == 200:
-                logger.info("Discord Bot 消息发送成功")
+                logger.info(f"Discord Bot 消息发送成功 (频道: {target_channel_id})")
                 return True
             else:
                 logger.error(f"Discord Bot 发送失败: {response.status_code} {response.text}")
@@ -2835,7 +2843,7 @@ class NotificationService:
             logger.error(f"AstrBot 发送异常: {e}")
             return False
     
-    def send(self, content: str) -> bool:
+    def send(self, content: str, discord_channel_id: Optional[str] = None) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送
         
@@ -2843,6 +2851,7 @@ class NotificationService:
         
         Args:
             content: 消息内容（Markdown 格式）
+            discord_channel_id: 指定Discord频道ID（可选）
             
         Returns:
             是否至少有一个渠道发送成功
@@ -2880,7 +2889,11 @@ class NotificationService:
                 elif channel == NotificationChannel.CUSTOM:
                     result = self.send_to_custom(content)
                 elif channel == NotificationChannel.DISCORD:
-                    result = self.send_to_discord(content)
+                    # 如果指定了Discord频道ID，使用指定的频道
+                    if discord_channel_id and self._discord_config.get("bot_token"):
+                        result = self._send_discord_bot(content, channel_id=discord_channel_id)
+                    else:
+                        result = self.send_to_discord(content)
                 elif channel == NotificationChannel.ASTRBOT:
                     result = self.send_to_astrbot(content)
                 else:

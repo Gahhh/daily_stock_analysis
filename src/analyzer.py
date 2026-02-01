@@ -70,7 +70,9 @@ STOCK_NAME_MAP = {
     'MSTR': 'MicroStrategy',
 
     # === 港股 (5位数字) ===
+    '00020': '商汤集团',
     '00700': '腾讯控股',
+    '03032': '恒生科技ETF',
     '03690': '美团',
     '01810': '小米集团',
     '09988': '阿里巴巴',
@@ -122,8 +124,15 @@ def get_stock_name_multi_source(
             return context['realtime']['name']
     
     # 2. 从静态映射表获取
+    # 尝试原始代码
     if stock_code in STOCK_NAME_MAP:
         return STOCK_NAME_MAP[stock_code]
+    
+    # 尝试去掉 hk 前缀（港股）
+    if stock_code.startswith('hk'):
+        clean_code = stock_code[2:]  # 去掉 'hk' 前缀
+        if clean_code in STOCK_NAME_MAP:
+            return STOCK_NAME_MAP[clean_code]
     
     # 3. 从数据源获取
     if data_manager is None:

@@ -219,93 +219,215 @@ def run_full_analysis(
     执行完整的分析流程（个股 + 大盘复盘）
     
     这是定时任务调用的主函数
+    
+    支持两种模式：
+    1. 单组模式（兼容原有功能）：使用 STOCK_LIST
+    2. 多组模式（新功能）：使用 STOCK_LIST_1, STOCK_LIST_2... 分组推送
     """
     try:
         # 命令行参数 --single-notify 覆盖配置（#55）
         if getattr(args, 'single_notify', False):
             config.single_stock_notify = True
         
-        # 创建调度器
+        # 检查是否配置了分组模式
+        if config.stock_groups:
+            # 多组模式：分组分析
+            logger.info(f"检测到 {len(config.stock_groups)} 个股票分组，启用分组推送模式")
+            run_grouped_analysis(config, args)
+        else:
+            # 单组模式：原有逻辑
+            run_single_group_analysis(config, args, stock_codes)
+        
+    except Exception as e:
+        logger.exception(f"分析流程执行失败: {e}")
+
+
+def run_single_group_analysis(
+    config: Config,
+    args: argparse.Namespace,
+    stock_codes: Optional[List[str]] = None
+):
+    """
+    单组分析模式（原有功能，向后兼容）
+    """
+    # 创建调度器
+    pipeline = StockAnalysisPipeline(
+        config=config,
+        max_workers=args.workers
+    )
+    
+    # 1. 运行个股分析
+    results = pipeline.run(
+        stock_codes=stock_codes,
+        dry_run=args.dry_run,
+        send_notification=not args.no_notify
+    )
+
+    # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
+    analysis_delay = getattr(config, 'analysis_delay', 0)
+    if analysis_delay > 0 and config.market_review_enabled and not args.no_market_review:
+        logger.info(f"等待 {analysis_delay} 秒后执行大盘复盘（避免API限流）...")
+        time.sleep(analysis_delay)
+
+    # 2. 运行大盘复盘（如果启用且不是仅个股模式）
+    market_report = ""
+    if config.market_review_enabled and not args.no_market_review:
+        # 只调用一次，并获取结果
+        review_result = run_market_review(
+            notifier=pipeline.notifier,
+            analyzer=pipeline.analyzer,
+            search_service=pipeline.search_service,
+            send_notification=not args.no_notify
+        )
+        # 如果有结果，赋值给 market_report 用于后续飞书文档生成
+        if review_result:
+            market_report = review_result
+    
+    # 输出摘要
+    if results:
+        logger.info("\n===== 分析结果摘要 =====")
+        for r in sorted(results, key=lambda x: x.sentiment_score, reverse=True):
+            emoji = r.get_emoji()
+            logger.info(
+                f"{emoji} {r.name}({r.code}): {r.operation_advice} | "
+                f"评分 {r.sentiment_score} | {r.trend_prediction}"
+            )
+    
+    logger.info("\n任务执行完成")
+
+    # === 新增：生成飞书云文档 ===
+    try:
+        feishu_doc = FeishuDocManager()
+        if feishu_doc.is_configured() and (results or market_report):
+            logger.info("正在创建飞书云文档...")
+
+            # 1. 准备标题 "01-01 13:01大盘复盘"
+            tz_cn = timezone(timedelta(hours=8))
+            now = datetime.now(tz_cn)
+            doc_title = f"{now.strftime('%Y-%m-%d %H:%M')} 大盘复盘"
+
+            # 2. 准备内容 (拼接个股分析和大盘复盘)
+            full_content = ""
+
+            # 添加大盘复盘内容（如果有）
+            if market_report:
+                full_content += f"# 📈 大盘复盘\n\n{market_report}\n\n---\n\n"
+
+            # 添加个股决策仪表盘（使用 NotificationService 生成）
+            if results:
+                dashboard_content = pipeline.notifier.generate_dashboard_report(results)
+                full_content += f"# 🚀 个股决策仪表盘\n\n{dashboard_content}"
+
+            # 3. 创建文档
+            doc_url = feishu_doc.create_daily_doc(doc_title, full_content)
+            if doc_url:
+                logger.info(f"飞书云文档创建成功: {doc_url}")
+                # 可选：将文档链接也推送到群里
+                if not args.no_notify:
+                    pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}")
+
+    except Exception as e:
+        logger.error(f"飞书文档生成失败: {e}")
+
+
+def run_grouped_analysis(
+    config: Config,
+    args: argparse.Namespace
+):
+    """
+    多组分析模式（新功能）
+    
+    为每个股票分组：
+    1. 分别进行分析
+    2. 推送到各自绑定的 Discord 频道
+    """
+    logger.info("========== 开始分组分析 ==========")
+    
+    all_results = []
+    
+    for group_id, group_config in config.stock_groups.items():
+        group_name = group_config.get("name", group_id)
+        stock_list = group_config.get("stocks", [])
+        discord_channel_id = group_config.get("discord_channel_id")
+        
+        if not stock_list:
+            logger.warning(f"[{group_name}] 股票列表为空，跳过")
+            continue
+        
+        logger.info(f"\n========== 分析 {group_name} ({len(stock_list)} 只股票) ==========")
+        logger.info(f"[{group_name}] 股票列表: {', '.join(stock_list)}")
+        if discord_channel_id:
+            logger.info(f"[{group_name}] Discord 频道: {discord_channel_id}")
+        
+        # 创建独立的调度器（使用指定的Discord频道）
         pipeline = StockAnalysisPipeline(
             config=config,
             max_workers=args.workers
         )
         
-        # 1. 运行个股分析
-        results = pipeline.run(
-            stock_codes=stock_codes,
-            dry_run=args.dry_run,
+        # 临时覆盖通知服务的Discord频道ID
+        original_channel_id = pipeline.notifier._discord_config.get("channel_id")
+        if discord_channel_id:
+            pipeline.notifier._discord_config["channel_id"] = discord_channel_id
+        
+        # 运行该组的分析
+        try:
+            results = pipeline.run(
+                stock_codes=stock_list,
+                dry_run=args.dry_run,
+                send_notification=not args.no_notify,
+                group_name=group_name,  # 传入分组名称
+                discord_channel_id=discord_channel_id  # 传入频道ID
+            )
+            
+            if results:
+                all_results.extend(results)
+                logger.info(f"[{group_name}] 分析完成，共 {len(results)} 只股票")
+        
+        except Exception as e:
+            logger.error(f"[{group_name}] 分析失败: {e}")
+        
+        finally:
+            # 恢复原始频道ID
+            if original_channel_id:
+                pipeline.notifier._discord_config["channel_id"] = original_channel_id
+        
+        # 组间延迟（可选）
+        if group_id != list(config.stock_groups.keys())[-1]:
+            delay = getattr(config, 'analysis_delay', 5)
+            if delay > 0:
+                logger.info(f"等待 {delay} 秒后分析下一组...")
+                time.sleep(delay)
+    
+    # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
+    analysis_delay = getattr(config, 'analysis_delay', 0)
+    if analysis_delay > 0 and config.market_review_enabled and not args.no_market_review:
+        logger.info(f"等待 {analysis_delay} 秒后执行大盘复盘（避免API限流）...")
+        time.sleep(analysis_delay)
+
+    # 运行大盘复盘（如果启用）
+    if config.market_review_enabled and not args.no_market_review:
+        logger.info("\n========== 开始大盘复盘 ==========")
+        pipeline = StockAnalysisPipeline(config=config, max_workers=args.workers)
+        review_result = run_market_review(
+            notifier=pipeline.notifier,
+            analyzer=pipeline.analyzer,
+            search_service=pipeline.search_service,
             send_notification=not args.no_notify
         )
-
-        # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
-        analysis_delay = getattr(config, 'analysis_delay', 0)
-        if analysis_delay > 0 and config.market_review_enabled and not args.no_market_review:
-            logger.info(f"等待 {analysis_delay} 秒后执行大盘复盘（避免API限流）...")
-            time.sleep(analysis_delay)
-
-        # 2. 运行大盘复盘（如果启用且不是仅个股模式）
-        market_report = ""
-        if config.market_review_enabled and not args.no_market_review:
-            # 只调用一次，并获取结果
-            review_result = run_market_review(
-                notifier=pipeline.notifier,
-                analyzer=pipeline.analyzer,
-                search_service=pipeline.search_service,
-                send_notification=not args.no_notify
+    
+    # 输出总体摘要
+    if all_results:
+        logger.info("\n===== 全部分析结果摘要 =====")
+        for r in sorted(all_results, key=lambda x: x.sentiment_score, reverse=True):
+            emoji = r.get_emoji()
+            logger.info(
+                f"{emoji} {r.name}({r.code}): {r.operation_advice} | "
+                f"评分 {r.sentiment_score} | {r.trend_prediction}"
             )
-            # 如果有结果，赋值给 market_report 用于后续飞书文档生成
-            if review_result:
-                market_report = review_result
-        
-        # 输出摘要
-        if results:
-            logger.info("\n===== 分析结果摘要 =====")
-            for r in sorted(results, key=lambda x: x.sentiment_score, reverse=True):
-                emoji = r.get_emoji()
-                logger.info(
-                    f"{emoji} {r.name}({r.code}): {r.operation_advice} | "
-                    f"评分 {r.sentiment_score} | {r.trend_prediction}"
-                )
-        
-        logger.info("\n任务执行完成")
+    
+    logger.info("\n========== 分组分析完成 ==========")
 
-        # === 新增：生成飞书云文档 ===
-        try:
-            feishu_doc = FeishuDocManager()
-            if feishu_doc.is_configured() and (results or market_report):
-                logger.info("正在创建飞书云文档...")
-
-                # 1. 准备标题 "01-01 13:01大盘复盘"
-                tz_cn = timezone(timedelta(hours=8))
-                now = datetime.now(tz_cn)
-                doc_title = f"{now.strftime('%Y-%m-%d %H:%M')} 大盘复盘"
-
-                # 2. 准备内容 (拼接个股分析和大盘复盘)
-                full_content = ""
-
-                # 添加大盘复盘内容（如果有）
-                if market_report:
-                    full_content += f"# 📈 大盘复盘\n\n{market_report}\n\n---\n\n"
-
-                # 添加个股决策仪表盘（使用 NotificationService 生成）
-                if results:
-                    dashboard_content = pipeline.notifier.generate_dashboard_report(results)
-                    full_content += f"# 🚀 个股决策仪表盘\n\n{dashboard_content}"
-
-                # 3. 创建文档
-                doc_url = feishu_doc.create_daily_doc(doc_title, full_content)
-                if doc_url:
-                    logger.info(f"飞书云文档创建成功: {doc_url}")
-                    # 可选：将文档链接也推送到群里
-                    if not args.no_notify:
-                        pipeline.notifier.send(f"[{now.strftime('%Y-%m-%d %H:%M')}] 复盘文档创建成功: {doc_url}")
-
-        except Exception as e:
-            logger.error(f"飞书文档生成失败: {e}")
-        
-    except Exception as e:
-        logger.exception(f"分析流程执行失败: {e}")
 
 
 def start_bot_stream_clients(config: Config) -> None:
