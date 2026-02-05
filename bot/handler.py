@@ -39,7 +39,14 @@ def get_platform(platform_name: str) -> Optional['BotPlatform']:
     if platform_name not in _platform_instances:
         platform_class = ALL_PLATFORMS.get(platform_name)
         if platform_class:
-            _platform_instances[platform_name] = platform_class()
+            # Discord平台需要传入PUBLIC KEY
+            if platform_name == 'discord':
+                from src.config import get_config
+                config = get_config()
+                public_key = getattr(config, 'discord_public_key', None)
+                _platform_instances[platform_name] = platform_class(public_key=public_key)
+            else:
+                _platform_instances[platform_name] = platform_class()
         else:
             logger.warning(f"[BotHandler] 未知平台: {platform_name}")
             return None
@@ -90,6 +97,15 @@ def handle_webhook(
         return WebhookResponse.error("Invalid JSON", 400)
     
     logger.debug(f"[BotHandler] 请求数据: {json.dumps(data, ensure_ascii=False)[:500]}")
+    
+    # 验证请求签名（如果平台支持）
+    if hasattr(platform, 'verify_request'):
+        logger.info(f"[BotHandler] 开始验证 {platform_name} 请求签名")
+        is_valid = platform.verify_request(headers, body)
+        if not is_valid:
+            logger.warning(f"[BotHandler] {platform_name} 请求签名验证失败")
+            return WebhookResponse.error("Unauthorized", 401)
+        logger.info(f"[BotHandler] {platform_name} 签名验证通过 ✓")
     
     # 处理 Webhook
     message, challenge_response = platform.handle_webhook(headers, body, data)

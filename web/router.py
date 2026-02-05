@@ -347,6 +347,13 @@ def create_default_router() -> Router:
         "钉钉机器人 Webhook"
     )
     
+    # Discord 机器人 Webhook (Interactions Endpoint)
+    router.register(
+        "/bot/discord", "POST",
+        lambda form: JsonResponse({"error": "Use POST with JSON body"}),
+        "Discord 机器人 Interactions"
+    )
+    
     # 企业微信机器人 Webhook（开发中）
     # router.register(
     #     "/bot/wecom", "POST",

@@ -107,6 +107,8 @@ class Config:
     discord_bot_token: Optional[str] = None  # Discord Bot Token
     discord_main_channel_id: Optional[str] = None  # Discord 主频道 ID
     discord_webhook_url: Optional[str] = None  # Discord Webhook URL
+    discord_application_id: Optional[str] = None  # Discord Application ID (用于Slash Commands)
+    discord_public_key: Optional[str] = None  # Discord Public Key (用于签名验证)
 
     # AstrBot 通知配置
     astrbot_token: Optional[str] = None
@@ -150,7 +152,7 @@ class Config:
     
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
-    schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
+    schedule_time: str = "06:00"              # 每日推送时间（HH:MM 格式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
 
     # === 实时行情增强数据配置 ===
@@ -389,6 +391,8 @@ class Config:
             discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
             discord_main_channel_id=os.getenv('DISCORD_MAIN_CHANNEL_ID'),
             discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
+            discord_application_id=os.getenv('DISCORD_APPLICATION_ID'),
+            discord_public_key=os.getenv('DISCORD_PUBLIC_KEY'),
             astrbot_url=os.getenv('ASTRBOT_URL'),
             astrbot_token=os.getenv('ASTRBOT_TOKEN'),
             single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
