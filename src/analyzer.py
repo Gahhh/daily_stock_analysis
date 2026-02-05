@@ -15,6 +15,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
+from json_repair import repair_json
 
 from tenacity import (
     retry,
@@ -170,6 +171,7 @@ class AnalysisResult:
     sentiment_score: int  # 综合评分 0-100 (>70强烈看多, >60看多, 40-60震荡, <40看空)
     trend_prediction: str  # 趋势预测：强烈看多/看多/震荡/看空/强烈看空
     operation_advice: str  # 操作建议：买入/加仓/持有/减仓/卖出/观望
+    decision_type: str = "hold"  # 决策类型：buy/hold/sell（用于统计）
     confidence_level: str = "中"  # 置信度：高/中/低
     
     # ========== 决策仪表盘 (新增) ==========
@@ -217,6 +219,7 @@ class AnalysisResult:
             'sentiment_score': self.sentiment_score,
             'trend_prediction': self.trend_prediction,
             'operation_advice': self.operation_advice,
+            'decision_type': self.decision_type,
             'confidence_level': self.confidence_level,
             'dashboard': self.dashboard,  # 决策仪表盘数据
             'trend_analysis': self.trend_analysis,
@@ -359,6 +362,7 @@ class GeminiAnalyzer:
     "sentiment_score": 0-100整数,
     "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
     "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
+    "decision_type": "buy/hold/sell",
     "confidence_level": "高/中/低",
 
     "dashboard": {
@@ -1171,6 +1175,17 @@ class GeminiAnalyzer:
                     name = ai_stock_name
 
                 # 解析所有字段，使用默认值防止缺失
+                # 解析 decision_type，如果没有则根据 operation_advice 推断
+                decision_type = data.get('decision_type', '')
+                if not decision_type:
+                    op = data.get('operation_advice', '持有')
+                    if op in ['买入', '加仓', '强烈买入']:
+                        decision_type = 'buy'
+                    elif op in ['卖出', '减仓', '强烈卖出']:
+                        decision_type = 'sell'
+                    else:
+                        decision_type = 'hold'
+                
                 return AnalysisResult(
                     code=code,
                     name=name,
@@ -1178,6 +1193,7 @@ class GeminiAnalyzer:
                     sentiment_score=int(data.get('sentiment_score', 50)),
                     trend_prediction=data.get('trend_prediction', '震荡'),
                     operation_advice=data.get('operation_advice', '持有'),
+                    decision_type=decision_type,
                     confidence_level=data.get('confidence_level', '中'),
                     # 决策仪表盘
                     dashboard=dashboard,
@@ -1232,6 +1248,9 @@ class GeminiAnalyzer:
         # 确保布尔值是小写
         json_str = json_str.replace('True', 'true').replace('False', 'false')
         
+        # fix by json-repair
+        json_str = repair_json(json_str)
+        
         return json_str
     
     def _parse_text_response(
@@ -1259,10 +1278,14 @@ class GeminiAnalyzer:
             sentiment_score = 65
             trend = '看多'
             advice = '买入'
+            decision_type = 'buy'
         elif negative_count > positive_count + 1:
             sentiment_score = 35
             trend = '看空'
             advice = '卖出'
+            decision_type = 'sell'
+        else:
+            decision_type = 'hold'
         
         # 截取前500字符作为摘要
         summary = response_text[:500] if response_text else '无分析结果'
@@ -1273,6 +1296,7 @@ class GeminiAnalyzer:
             sentiment_score=sentiment_score,
             trend_prediction=trend,
             operation_advice=advice,
+            decision_type=decision_type,
             confidence_level='低',
             analysis_summary=summary,
             key_points='JSON解析失败，仅供参考',

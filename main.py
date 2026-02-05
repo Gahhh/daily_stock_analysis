@@ -39,6 +39,7 @@ import argparse
 import logging
 import sys
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -206,6 +207,12 @@ def parse_arguments() -> argparse.Namespace:
         action='store_true',
         help='仅启动 WebUI 服务，不自动执行分析（通过 /analysis API 手动触发）'
     )
+
+    parser.add_argument(
+        '--no-context-snapshot',
+        action='store_true',
+        help='不保存分析上下文快照'
+    )
     
     return parser.parse_args()
 
@@ -250,10 +257,18 @@ def run_single_group_analysis(
     """
     单组分析模式（原有功能，向后兼容）
     """
-    # 创建调度器
+    # 创建调度器（添加原作者新增的参数支持）
+    save_context_snapshot = None
+    if getattr(args, 'no_context_snapshot', False):
+        save_context_snapshot = False
+    query_id = uuid.uuid4().hex
+    
     pipeline = StockAnalysisPipeline(
         config=config,
-        max_workers=args.workers
+        max_workers=args.workers,
+        query_id=query_id,
+        query_source="cli",
+        save_context_snapshot=save_context_snapshot
     )
     
     # 1. 运行个股分析
@@ -359,10 +374,18 @@ def run_grouped_analysis(
         if discord_channel_id:
             logger.info(f"[{group_name}] Discord 频道: {discord_channel_id}")
         
-        # 创建独立的调度器（使用指定的Discord频道）
+        # 创建独立的调度器（使用指定的Discord频道，并添加原作者新增的参数支持）
+        save_context_snapshot = None
+        if getattr(args, 'no_context_snapshot', False):
+            save_context_snapshot = False
+        query_id = uuid.uuid4().hex
+        
         pipeline = StockAnalysisPipeline(
             config=config,
-            max_workers=args.workers
+            max_workers=args.workers,
+            query_id=query_id,
+            query_source="cli",
+            save_context_snapshot=save_context_snapshot
         )
         
         # 临时覆盖通知服务的Discord频道ID
